@@ -11,7 +11,6 @@ import signal
 import subprocess
 
 TEMP_DIR_FMT = '.multicore_pid_{:d}'
-MAX_CACHE_QUEUE = 100
 MAX_BAD_VT = 99999
 PROGR = 'ram36_vt4n.exe'
 
@@ -35,14 +34,16 @@ def init_worker():
 def read_output(fobj, param):
     """ Read output file and find the RMS and WRMS """
 
-    queue = []
+    wrms_queue = []
+    rms_queue = []
     n_bad_vt = 0
-    if isinstance(fobj, str):   # a text file on disk
+    if isinstance(fobj, str):  # a text file on disk
         with open(fobj, 'r') as f:
             for a_line in f:
-                if len(queue) > MAX_CACHE_QUEUE:
-                    queue.pop(0)
-                queue.append(a_line)
+                if a_line.startswith(' wrms'):
+                    wrms_queue.append(a_line)
+                if a_line.startswith(' rms_MHz'):
+                    rms_queue.append(a_line)
                 if a_line.startswith('rmscat_MHz'):
                     break
                 if a_line.startswith(' the lowest vt coeff included for'):
@@ -52,9 +53,9 @@ def read_output(fobj, param):
                 if a_line.startswith(' iteration number '):
                     # reset bad vt line records
                     n_bad_vt = 0
-    else:   # a subprocess Pipe
-        with open(param.strip().replace('*','')+'.out', 'w') as fo:
-        # also save as text, so that if we find the best fit, we don't need to re-run the fit
+    else:  # a subprocess Pipe
+        with open(param.strip().replace('*', '') + '.out', 'w') as fo:
+            # also save as text, so that if we find the best fit, we don't need to re-run the fit
             is_stop_queue = False
             for a_line in fobj.stdout:
                 fo.write(a_line)
@@ -64,9 +65,10 @@ def read_output(fobj, param):
                 if is_stop_queue:
                     pass
                 else:
-                    if len(queue) > MAX_CACHE_QUEUE:
-                        queue.pop(0)
-                    queue.append(a_line)
+                    if a_line.startswith(' wrms'):
+                        wrms_queue.append(a_line)
+                    if a_line.startswith(' rms_MHz'):
+                        rms_queue.append(a_line)
                 if a_line.startswith(' iteration number '):
                     # reset bad vt line records
                     n_bad_vt = 0
@@ -95,28 +97,23 @@ def read_output(fobj, param):
                         break
             fobj.terminate()
             fobj.wait()
-    # search upward to find rms & wrms
-    wrms = 'NaN'
-    rms_mhz = 'NaN'
 
-    # pop the last rms_mHz and wrms
-    # this one is the final value which may be super large due to
-    # the automatically discarded bad assignments
-    while queue:
-        a_line = queue.pop()
-        if a_line.strip().startswith('wrms'):
-            wrms = a_line.split('=')[1].split()[0]
-        if a_line.strip().startswith('rms_MHz'):
-            rms_mhz = a_line.split('=')[1].split()[0]
-    # try to find the second last one, which is the value from
-    # the last iteration. If not fount, return the previous one,
-    # if found, use this one
-    while queue:
-        a_line = queue.pop()
-        if a_line.strip().startswith('wrms'):
-            wrms = a_line.split('=')[1].split()[0]
-        if a_line.strip().startswith('rms_MHz'):
-            rms_mhz = a_line.split('=')[1].split()[0]
+    # search upward to find rms & wrms, the second last one is the last iteration
+    # the last one may be super large due to inclusion of discarded bad assignments
+    try:
+        if len(rms_queue) > 1:
+            a_line = rms_queue[-2]
+        else:
+            a_line = rms_queue[-1]
+        rms_mhz = a_line.split('=')[1].split()[0]
+        if len(wrms_queue) > 1:
+            a_line = wrms_queue[-2]
+        else:
+            a_line = wrms_queue[-1]
+        wrms = a_line.split('=')[1].split()[0]
+    except IndexError:
+        wrms = 'NaN'
+        rms_mhz = 'NaN'
     return wrms, rms_mhz
 
 
@@ -131,7 +128,7 @@ def compare_order(a_line, order):
     If 2 digits, it is read as "nt"
     If 3 digits, it is read as "ntr"
     """
-    ol = a_line[98:98+6].split()
+    ol = a_line[98:98 + 6].split()
     if order < 10 and len(ol) >= 1:
         return int(ol[0]) <= order
     elif 10 <= order < 100 and len(ol) >= 2:
@@ -143,7 +140,6 @@ def compare_order(a_line, order):
 
 
 def opt(root_dir, cache_input_file, param, is_float, is_fix):
-
     # create temporary directory
     sub_dir = TEMP_DIR_FMT.format(os.getpid())
     this_dir = os.path.join(root_dir, sub_dir)
@@ -202,12 +198,12 @@ def opt(root_dir, cache_input_file, param, is_float, is_fix):
         except ValueError:
             wrms, rms_mhz = 'NaN', 'NaN'
         # print(param, '  ', wrms, rms_mhz)
-    else:   # the parameters that have been included already in the initial input, skip them
+    else:  # the parameters that have been included already in the initial input, skip them
         wrms = ''
         rms_mhz = ''
     print('{:<13s} {:>2d} {:s} {:s}'.format(param, int(is_float), wrms, rms_mhz), flush=True)
     # copy the output file out
-    _ = subprocess.run(['copy', '*.out', '..\outputs'], shell=True,
+    _ = subprocess.run(['copy', '*.out', '..\\outputs'], shell=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     # get back to root dir
     os.chdir(root_dir)
@@ -266,9 +262,9 @@ def read_user_param_list(fin, user_param_list):
 
 def run(fin, ncore, is_fix, user_param_list, order):
     """ Run the multi-core code """
-    print('-'*11, 'RAM36 Parameter Exploration', '-'*11, flush=True)
+    print('-' * 11, 'RAM36 Parameter Exploration', '-' * 11, flush=True)
     print('{:<16s} {:^16s} {:^16s}'.format('Parameter', 'wrms', 'rms_MHz'), flush=True)
-    print('-'*51, flush=True)
+    print('-' * 51, flush=True)
     root_dir = os.getcwd()
     if user_param_list:
         param_list, cache_input_line = read_user_param_list(fin, user_param_list)
@@ -284,7 +280,8 @@ def run(fin, ncore, is_fix, user_param_list, order):
         os.mkdir(os.path.join(root_dir, 'outputs'))
     pool = mp.Pool(processes=ncore, initializer=init_worker)
     try:
-        pool.starmap(opt, list((root_dir, cache_input_line, param, is_float, is_fix) for (param, is_float) in param_list))
+        pool.starmap(
+            opt, list((root_dir, cache_input_line, param, is_float, is_fix) for (param, is_float) in param_list))
         # get all pids and remove all these temporary folder
         for child in mp.active_children():
             sub_dir = TEMP_DIR_FMT.format(child.pid)
@@ -300,13 +297,12 @@ def run(fin, ncore, is_fix, user_param_list, order):
 
 
 if __name__ == '__main__':
-
     args = arg()
     order = args.order[0] if args.order else None
     user_param_list = args.paramlist if args.paramlist else None
     ncore = args.ncore if isinstance(args.ncore, int) else args.ncore[0]
     tick = time()
     run(args.f[0], ncore, args.fix, user_param_list, order)
-    t = (time()-tick)/60
-    print('-'*9, 'Total elapsed time: {:.0f} h {:.1f} min'.format(t // 60, t % 60), '-'*9)
+    t = (time() - tick) / 60
+    print('-' * 9, 'Total elapsed time: {:.0f} h {:.1f} min'.format(t // 60, t % 60), '-' * 9)
     print('')
